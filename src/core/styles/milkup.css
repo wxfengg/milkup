@@ -16,6 +16,8 @@
   display: flex;
   flex-direction: column;
   position: relative; /* 为 placeholder 提供定位上下文 */
+  user-select: text; /* 编辑器区域允许选中文本 */
+  -webkit-user-select: text; /* Safari 兼容 */
 }
 
 /* 源码模式下为行号留出空间 */
