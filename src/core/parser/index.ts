@@ -114,9 +114,9 @@ const BLOCK_PATTERNS = {
   horizontal_rule: /^([-*_]){3,}\s*$/, // 允许行尾有空格
   table_row: /^\|(.+)\|\s*$/,
   table_separator: /^\|[-:\s|]+\|\s*$/,
-  math_block_start: /^\$\$\s*$/, // 多行数学块开始
-  math_block_end: /^\$\$\s*$/, // 多行数学块结束
-  math_block_inline: /^\$\$(.+)\$\$$/, // 单行数学块 $$content$$
+  math_block_start: /^\s*\$\$\s*$/, // 多行数学块开始（支持缩进）
+  math_block_end: /^\s*\$\$\s*$/, // 多行数学块结束（支持缩进）
+  math_block_inline: /^\s*\$\$(.+)\$\$\s*$/, // 单行数学块 $$content$$（支持缩进）
   image: /^!\[([^\]]*)\]\((.+?)(?:\s+"([^"]*)")?\)\s*$/, // 图片 ![alt](src "title") - 允许 URL 中有空格
   container_start: /^:::(\w+)(?:\s+(.*))?$/,
   container_end: /^:::\s*$/, // 允许行尾有空格

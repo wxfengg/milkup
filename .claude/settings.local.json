@@ -24,7 +24,8 @@
       "Bash(pnpm install)",
       "Bash(node test-version-compare.js)",
       "Bash(git show:*)",
-      "Bash(node test-blockquote-fix.mjs)"
+      "Bash(node test-blockquote-fix.mjs)",
+      "Bash(node -e:*)"
     ]
   }
 }
