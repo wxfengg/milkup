@@ -634,9 +634,11 @@ export function toggleSourceView(state: EditorState, dispatch?: (tr: any) => voi
   const newSourceView = !pluginState.sourceView;
 
   if (dispatch) {
-    const tr = state.tr.setMeta(decorationPluginKey, {
-      sourceView: newSourceView,
-    });
+    const tr = state.tr
+      .setMeta(decorationPluginKey, {
+        sourceView: newSourceView,
+      })
+      .setMeta("addToHistory", false);
     // 将文档转换合并到同一个 transaction 中，避免 appendTransaction 产生第二轮插件应用
     if (newSourceView) {
       convertBlocksToParagraphs(tr);
@@ -661,7 +663,9 @@ export function setSourceView(
   dispatch?: (tr: any) => void
 ): boolean {
   if (dispatch) {
-    const tr = state.tr.setMeta(decorationPluginKey, { sourceView: enabled });
+    const tr = state.tr
+      .setMeta(decorationPluginKey, { sourceView: enabled })
+      .setMeta("addToHistory", false);
     dispatch(tr);
   }
 

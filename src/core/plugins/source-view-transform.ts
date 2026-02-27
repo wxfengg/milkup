@@ -819,7 +819,7 @@ export function createSourceViewTransformPlugin(): Plugin {
 
       // 源码模式状态发生变化
       if (oldSourceView !== newSourceView) {
-        const tr = newState.tr;
+        const tr = newState.tr.setMeta("addToHistory", false);
 
         if (newSourceView) {
           // 进入源码模式：将块级元素转换为段落
@@ -852,7 +852,7 @@ export function createSourceViewTransformPlugin(): Plugin {
         });
 
         if (hasBlocks) {
-          const tr = newState.tr;
+          const tr = newState.tr.setMeta("addToHistory", false);
           convertBlocksToParagraphs(tr);
           return tr.docChanged ? tr : null;
         }
