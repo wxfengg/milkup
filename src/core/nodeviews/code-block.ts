@@ -76,12 +76,49 @@ export function detectDarkTheme(): boolean {
 }
 
 /**
- * 获取当前主题名称
+ * 从当前 CSS 变量中生成 Mermaid 主题变量，实现与编辑器主题的精确适配
  */
-function getCurrentThemeName(): string {
-  const htmlElement = document.documentElement;
-  const themeClass = Array.from(htmlElement.classList).find((c) => c.startsWith("theme-"));
-  return themeClass ? themeClass.replace("theme-", "") : "normal";
+function getMermaidThemeVariables(): Record<string, string> {
+  const style = getComputedStyle(document.documentElement);
+  const get = (prop: string) => style.getPropertyValue(prop).trim();
+
+  const primaryColor = get("--primary-color");
+  const backgroundColor = get("--background-color-1");
+  const bgColor2 = get("--background-color-2");
+  const bgColor3 = get("--background-color-3");
+  const textColor = get("--text-color");
+  const textColor2 = get("--text-color-2");
+  const borderColor = get("--border-color");
+
+  const isDark = detectDarkTheme();
+
+  return {
+    primaryColor,
+    primaryTextColor: isDark ? textColor : backgroundColor,
+    primaryBorderColor: borderColor,
+    lineColor: textColor2,
+    secondaryColor: bgColor2,
+    tertiaryColor: bgColor3,
+    background: backgroundColor,
+    mainBkg: backgroundColor,
+    nodeBorder: borderColor,
+    clusterBkg: bgColor2,
+    clusterBorder: borderColor,
+    titleColor: textColor,
+    edgeLabelBackground: backgroundColor,
+    textColor,
+    noteTextColor: textColor,
+    noteBkgColor: bgColor2,
+    noteBorderColor: borderColor,
+    actorBkg: backgroundColor,
+    actorBorder: borderColor,
+    actorTextColor: textColor,
+    signalColor: textColor,
+    signalTextColor: backgroundColor,
+    labelBoxBkgColor: backgroundColor,
+    labelBoxBorderColor: borderColor,
+    labelTextColor: textColor,
+  };
 }
 
 /**
@@ -249,6 +286,11 @@ export class CodeBlockView implements NodeView {
           );
         }
       });
+    }
+
+    // 用户手动创建的 mermaid 代码块（内容为空），使用混合模式方便编辑
+    if (normalizedLang === "mermaid" && !node.textContent) {
+      this.mermaidDisplayMode = "mixed";
     }
 
     // 创建容器
@@ -1152,19 +1194,12 @@ export class CodeBlockView implements NodeView {
     try {
       const mermaid = await import("mermaid");
       const isDark = detectDarkTheme();
-      const themeName = getCurrentThemeName();
-
-      // 根据主题选择 Mermaid 主题
-      let mermaidTheme = "default";
-      if (isDark) {
-        mermaidTheme = "dark";
-      } else if (themeName === "frame") {
-        mermaidTheme = "forest";
-      }
 
       mermaid.default.initialize({
         startOnLoad: false,
-        theme: mermaidTheme,
+        darkMode: isDark,
+        theme: "base",
+        themeVariables: getMermaidThemeVariables(),
       });
 
       const { svg } = await mermaid.default.render(`mermaid-${Date.now()}`, content);
@@ -1449,6 +1484,23 @@ export class CodeBlockView implements NodeView {
       this.cm.dispatch({
         effects: this.languageCompartment.reconfigure(getLanguageExtension(node.attrs.language)),
       });
+
+      // mermaid 状态变化时，更新头部和预览
+      const language = node.attrs.language;
+      if ((prevLanguage === "mermaid") !== (language === "mermaid")) {
+        this.updateHeader(language);
+      }
+      if (language === "mermaid") {
+        this.mermaidDisplayMode = globalMermaidDefaultMode;
+        this.createMermaidPreview(newText);
+      } else if (this.mermaidPreview) {
+        this.mermaidPreview.remove();
+        this.mermaidPreview = null;
+        // 恢复编辑器容器的显示（diagram 模式下会被隐藏）
+        if (this.editorContainer) {
+          this.editorContainer.style.display = "block";
+        }
+      }
     }
 
     // 更新搜索高亮
