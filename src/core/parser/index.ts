@@ -281,9 +281,9 @@ export class MarkdownParser {
         }
       }
 
-      // HTML 块
+      // HTML 块（排除 autolink 如 <https://...> 和 <http://...>）
       const htmlMatch = line.match(BLOCK_PATTERNS.html_block_start);
-      if (htmlMatch) {
+      if (htmlMatch && !/^<(?:https?:\/\/|mailto:)/i.test(line)) {
         const result = this.parseHtmlBlock(lines, i);
         blocks.push(result.node);
         i = result.endIndex + 1;

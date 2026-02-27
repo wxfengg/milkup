@@ -138,6 +138,7 @@ export class HtmlBlockView implements NodeView {
     // 创建容器
     this.dom = document.createElement("div");
     this.dom.className = "milkup-html-block";
+    this.applyInlineHtmlClass(node);
 
     // 创建 header（固定显示 "HTML"）
     this.header = document.createElement("div");
@@ -385,6 +386,7 @@ export class HtmlBlockView implements NodeView {
     if (node.type.name !== "html_block") return false;
     this.node = node;
     const newText = node.textContent;
+    this.applyInlineHtmlClass(node);
 
     if (newText !== this.cm.state.doc.toString()) {
       this.updating = true;
@@ -425,6 +427,17 @@ export class HtmlBlockView implements NodeView {
 
   ignoreMutation(): boolean {
     return true;
+  }
+
+  /**
+   * 检测是否是简单内联 HTML（如 <br />、<hr /> 等自闭合标签）
+   * 如果是，添加 inline-html 类以隐藏外框
+   */
+  private applyInlineHtmlClass(node: ProseMirrorNode): void {
+    const content = node.textContent.trim();
+    // 匹配纯自闭合标签：<tagname /> 或 <tagname/> 或 <tagname attr />
+    const isSimpleVoid = /^<\w+(?:\s+[^>]*)?\s*\/?>$/.test(content) && !content.includes("\n");
+    this.dom.classList.toggle("inline-html", isSimpleVoid);
   }
 
   destroy(): void {
