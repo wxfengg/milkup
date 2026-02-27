@@ -55,10 +55,7 @@ function onOiClick(oi: { id: string; text: string; level: number; pos: number })
         </span>
         <span v-if="outline.length === 0" class="empty">暂无内容</span>
       </div>
-
-      <div v-else-if="activeTab === 'file'">
-        <WorkSpace />
-      </div>
+      <WorkSpace v-else-if="activeTab === 'file'" />
     </div>
   </div>
 </template>

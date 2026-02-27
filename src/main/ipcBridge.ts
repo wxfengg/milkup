@@ -48,7 +48,11 @@ function cleanupWindowState(windowId: number): void {
 const watchedFiles = new Set<string>();
 let watcher: FSWatcher | null = null;
 
-// 所有 on 类型监听 —— 使用 event.sender 自动路由到正确窗口
+// 目录监听 watcher
+let directoryWatcher: FSWatcher | null = null;
+let directoryChangedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+// 所有 on 类型监听
 export function registerIpcOnHandlers(win: Electron.BrowserWindow) {
   ipcMain.on("set-title", (event, filePath: string | null) => {
     const targetWin = BrowserWindow.fromWebContents(event.sender);
@@ -680,6 +684,7 @@ export function registerGlobalIpcHandlers() {
         name: string;
         path: string;
         isDirectory: boolean;
+        mtime: number;
         children?: WorkSpace[];
       }
 
@@ -735,18 +740,28 @@ export function registerGlobalIpcHandlers() {
               const children = scanDirectory(itemPath, depth + 1);
               // 只有当文件夹包含markdown文件或子文件夹时才显示
               if (children.length > 0) {
+                let dirMtime = 0;
+                try {
+                  dirMtime = fs.statSync(itemPath).mtimeMs;
+                } catch {}
                 directories.push({
                   name: item.name,
                   path: itemPath,
                   isDirectory: true,
+                  mtime: dirMtime,
                   children,
                 });
               }
             } else if (item.isFile() && /\.(?:md|markdown)$/i.test(item.name)) {
+              let fileMtime = 0;
+              try {
+                fileMtime = fs.statSync(itemPath).mtimeMs;
+              } catch {}
               files.push({
                 name: item.name,
                 path: itemPath,
                 isDirectory: false,
+                mtime: fileMtime,
               });
             }
           }
@@ -814,6 +829,96 @@ export function registerGlobalIpcHandlers() {
       removedFiles.forEach((filePath) => watchedFiles.delete(filePath));
     }
   });
+
+  // 监听目录变化（用于文件列表自动刷新）
+  ipcMain.on("workspace:watchDirectory", (_event, dirPath: string) => {
+    // 先关闭旧的 watcher
+    if (directoryWatcher) {
+      directoryWatcher.close();
+      directoryWatcher = null;
+    }
+
+    if (!dirPath || !fs.existsSync(dirPath)) return;
+
+    const IGNORE_DIRS =
+      /(?:^|[/\\])(?:\.git|\.vscode|\.idea|node_modules|\.next|\.nuxt|dist|build|coverage)(?:[/\\]|$)/;
+
+    directoryWatcher = chokidar.watch(dirPath, {
+      ignoreInitial: true,
+      depth: 10,
+      ignored: (watchPath) => IGNORE_DIRS.test(watchPath),
+      persistent: true,
+    });
+
+    const notifyChanged = () => {
+      if (directoryChangedDebounceTimer) clearTimeout(directoryChangedDebounceTimer);
+      directoryChangedDebounceTimer = setTimeout(() => {
+        const mainWindow = BrowserWindow.getAllWindows()[0];
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("workspace:directory-changed");
+        }
+      }, 300);
+    };
+
+    directoryWatcher.on("add", notifyChanged);
+    directoryWatcher.on("unlink", notifyChanged);
+    directoryWatcher.on("addDir", notifyChanged);
+    directoryWatcher.on("unlinkDir", notifyChanged);
+  });
+
+  // 停止监听目录
+  ipcMain.on("workspace:unwatchDirectory", () => {
+    if (directoryWatcher) {
+      directoryWatcher.close();
+      directoryWatcher = null;
+    }
+    if (directoryChangedDebounceTimer) {
+      clearTimeout(directoryChangedDebounceTimer);
+      directoryChangedDebounceTimer = null;
+    }
+  });
+
+  // 创建文件
+  ipcMain.handle(
+    "workspace:createFile",
+    async (_event, { dirPath, fileName }: { dirPath: string; fileName: string }) => {
+      try {
+        const filePath = path.join(dirPath, fileName);
+        fs.writeFileSync(filePath, "", "utf-8");
+        return filePath;
+      } catch (error) {
+        console.error("创建文件失败:", error);
+        return null;
+      }
+    }
+  );
+
+  // 删除文件或文件夹
+  ipcMain.handle("workspace:deleteFile", async (_event, filePath: string) => {
+    try {
+      fs.rmSync(filePath, { recursive: true });
+      return true;
+    } catch (error) {
+      console.error("删除文件失败:", error);
+      return false;
+    }
+  });
+
+  // 重命名文件或文件夹
+  ipcMain.handle(
+    "workspace:renameFile",
+    async (_event, { oldPath, newName }: { oldPath: string; newName: string }) => {
+      try {
+        const dir = path.dirname(oldPath);
+        const newPath = path.join(dir, newName);
+        fs.renameSync(oldPath, newPath);
+        return newPath;
+      } catch (error) {
+        console.error("重命名文件失败:", error);
+        return null;
+      }
+    }
+  );
 }
 export function close(win: Electron.BrowserWindow) {
   // 如果窗口已销毁或已在关闭流程中，跳过

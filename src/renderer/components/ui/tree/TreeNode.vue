@@ -1,15 +1,79 @@
 <script lang="ts" setup>
-import type { TreeNodeProps } from './types'
-import { computed } from 'vue'
-import { useTreeContext } from './context'
+import type { TreeNodeProps } from "./types";
+import { computed, nextTick, ref, watch } from "vue";
+import { useTreeContext } from "./context";
 
-const props = defineProps<TreeNodeProps>()
+const props = defineProps<TreeNodeProps>();
 
-const { expandedNodes, currentNode, transitionHooks, handleNodeClick } = useTreeContext()
+const {
+  expandedNodes,
+  currentNode,
+  editingPath,
+  transitionHooks,
+  handleNodeClick,
+  handleNodeContextMenu,
+  handleEditConfirm,
+  handleEditCancel,
+} = useTreeContext();
 
-const isExpanded = computed(() => expandedNodes.has(props.node.path))
+const isExpanded = computed(() => expandedNodes.has(props.node.path));
 
-const isSelected = computed(() => currentNode.value === props.node.path)
+const isSelected = computed(() => currentNode.value === props.node.path);
+
+const isEditing = computed(() => editingPath.value === props.node.path);
+
+const editInputRef = ref<HTMLInputElement | null>(null);
+const editValue = ref("");
+
+watch(isEditing, (val) => {
+  if (val) {
+    // 初始化编辑值：文件去掉扩展名，文件夹显示全名
+    if (props.node.isDirectory) {
+      editValue.value = props.node.name;
+    } else {
+      const lastDot = props.node.name.lastIndexOf(".");
+      editValue.value = lastDot > 0 ? props.node.name.substring(0, lastDot) : props.node.name;
+    }
+    nextTick(() => {
+      editInputRef.value?.focus();
+      editInputRef.value?.select();
+    });
+  }
+});
+
+function onEditKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    confirmEdit();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    handleEditCancel(props.node);
+  }
+}
+
+function confirmEdit() {
+  const trimmed = editValue.value.trim();
+  if (!trimmed) {
+    handleEditCancel(props.node);
+    return;
+  }
+  // 如果是文件，自动补回扩展名
+  let finalName = trimmed;
+  if (!props.node.isDirectory) {
+    const lastDot = props.node.name.lastIndexOf(".");
+    const ext = lastDot > 0 ? props.node.name.substring(lastDot) : ".md";
+    if (!finalName.endsWith(ext)) {
+      finalName += ext;
+    }
+  }
+  handleEditConfirm(props.node, finalName);
+}
+
+function onContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  handleNodeContextMenu(props.node, e);
+}
 </script>
 
 <template>
@@ -20,6 +84,7 @@ const isSelected = computed(() => currentNode.value === props.node.path)
       :class="{ selected: isSelected }"
       :style="{ paddingLeft: `${10}px` }"
       @click="() => handleNodeClick(node)"
+      @contextmenu="onContextMenu"
     >
       <!-- 展开/折叠图标 -->
       <span
@@ -35,16 +100,23 @@ const isSelected = computed(() => currentNode.value === props.node.path)
       <span class="file-icon">
         <span
           class="iconfont"
-          :class="[
-            { active: isExpanded },
-            node.isDirectory
-              ? 'icon-folder-copy' : 'icon-markdown',
-          ]"
+          :class="[{ active: isExpanded }, node.isDirectory ? 'icon-folder-copy' : 'icon-markdown']"
         ></span>
       </span>
 
-      <!-- 节点名称 -->
-      <span class="node-name" :class="{ active: isExpanded, selected: isSelected }">{{ node.name }}</span>
+      <!-- 节点名称 / 编辑输入框 -->
+      <input
+        v-if="isEditing"
+        ref="editInputRef"
+        v-model="editValue"
+        class="node-edit-input"
+        @keydown="onEditKeydown"
+        @blur="confirmEdit"
+        @click.stop
+      />
+      <span v-else class="node-name" :class="{ active: isExpanded, selected: isSelected }">{{
+        node.name
+      }}</span>
     </div>
 
     <!-- 子节点容器 - 左右布局 -->
@@ -60,17 +132,10 @@ const isSelected = computed(() => currentNode.value === props.node.path)
     >
       <div v-if="isExpanded && node.children" class="children-container">
         <!-- 左侧竖线 -->
-        <div
-          class="vertical-line"
-          :style="{ marginLeft: `${18}px` }"
-        />
+        <div class="vertical-line" :style="{ marginLeft: `${18}px` }" />
         <!-- 右侧子节点 -->
         <div class="children">
-          <TreeNode
-            v-for="child in node.children"
-            :key="child.path"
-            :node="child"
-          />
+          <TreeNode v-for="child in node.children" :key="child.path" :node="child" />
         </div>
       </div>
     </Transition>
@@ -163,8 +228,20 @@ const isSelected = computed(() => currentNode.value === props.node.path)
 
       &.selected {
         color: var(--text-color-1);
-
       }
+    }
+
+    .node-edit-input {
+      flex: 1;
+      font-size: 12px;
+      color: var(--text-color-1);
+      background: var(--background-color-2);
+      border: 1px solid var(--primary-color);
+      border-radius: 3px;
+      padding: 1px 4px;
+      outline: none;
+      min-width: 60px;
+      max-width: 200px;
     }
   }
 
@@ -172,7 +249,7 @@ const isSelected = computed(() => currentNode.value === props.node.path)
   .children-container {
     display: flex;
     position: relative;
-    transition: all 0.3s cubic-bezier(0.230, 1.000, 0.320, 1.000);
+    transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
   }
 
   // 左侧竖线
@@ -187,6 +264,5 @@ const isSelected = computed(() => currentNode.value === props.node.path)
     flex: 1;
     position: relative;
   }
-
 }
 </style>

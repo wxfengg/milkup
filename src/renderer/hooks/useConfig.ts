@@ -18,6 +18,9 @@ interface AppConfig extends Record<string, any> {
     defaultDisplayMode: "code" | "mixed" | "diagram";
   };
   shortcuts: ShortcutKeyMap;
+  workspace: {
+    sortBy: "name" | "mtime";
+  };
 }
 
 const defaultConfig: AppConfig = {
@@ -32,6 +35,9 @@ const defaultConfig: AppConfig = {
     defaultDisplayMode: "diagram",
   },
   shortcuts: {},
+  workspace: {
+    sortBy: "name",
+  },
 };
 
 const config = useStorage<AppConfig>("milkup-config", defaultConfig, localStorage, {

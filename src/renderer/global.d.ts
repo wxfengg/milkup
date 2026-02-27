@@ -58,9 +58,20 @@ interface Window {
     // 文件夹相关
     getDirectoryFiles: (
       dirPath: string
-    ) => Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
+    ) => Promise<
+      Array<{ name: string; path: string; isDirectory: boolean; mtime: number; children?: any[] }>
+    >;
     // 监听文件变化
     watchFiles: (filePaths: string[]) => void;
+
+    // 目录监听
+    watchDirectory: (dirPath: string) => void;
+    unwatchDirectory: () => void;
+
+    // 文件操作
+    createFile: (dirPath: string, fileName: string) => Promise<string | null>;
+    deleteFile: (filePath: string) => Promise<boolean>;
+    renameFile: (oldPath: string, newName: string) => Promise<string | null>;
     // 主题编辑器相关
     openThemeEditor: (theme?: any) => void;
     themeEditorWindowControl: (action: "minimize" | "maximize" | "close") => void;

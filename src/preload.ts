@@ -75,6 +75,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 监听文件变化
   watchFiles: (filePaths: string[]) => ipcRenderer.send("file:watch", filePaths),
 
+  // 目录监听
+  watchDirectory: (dirPath: string) => ipcRenderer.send("workspace:watchDirectory", dirPath),
+  unwatchDirectory: () => ipcRenderer.send("workspace:unwatchDirectory"),
+
+  // 文件操作
+  createFile: (dirPath: string, fileName: string) =>
+    ipcRenderer.invoke("workspace:createFile", { dirPath, fileName }),
+  deleteFile: (filePath: string) => ipcRenderer.invoke("workspace:deleteFile", filePath),
+  renameFile: (oldPath: string, newName: string) =>
+    ipcRenderer.invoke("workspace:renameFile", { oldPath, newName }),
+
   // 主题编辑器相关
   openThemeEditor: (theme?: any) => ipcRenderer.send("open-theme-editor", theme),
   themeEditorWindowControl: (action: "minimize" | "maximize" | "close") =>
