@@ -5,6 +5,8 @@ import { cleanupProtocolUrls, detectFileTraits, normalizeMarkdown } from "./file
 import {
   close,
   getIsQuitting,
+  isWindowClosing,
+  setIsQuitting,
   registerGlobalIpcHandlers,
   registerIpcHandleHandlers,
   registerIpcOnHandlers,
@@ -13,10 +15,17 @@ import createMenu from "./menu";
 import { setupUpdateHandlers } from "./update";
 import { trackWindow } from "./windowManager";
 
-let win: BrowserWindow;
+let win: BrowserWindow | null = null;
 let themeEditorWindow: BrowserWindow | null = null;
 let isRendererReady = false;
 let pendingStartupFile: string | null = null;
+
+/** 安全获取一个可用的编辑器窗口（优先主窗口，回退到任意存活窗口） */
+function getAvailableWindow(): BrowserWindow | null {
+  if (win && !win.isDestroyed()) return win;
+  const allWindows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+  return allWindows[0] ?? null;
+}
 
 async function createWindow() {
   win = new BrowserWindow({
@@ -40,15 +49,11 @@ async function createWindow() {
   trackWindow(win, true);
 
   globalShortcut.register("CommandOrControl+Shift+I", () => {
-    if (win) win.webContents.openDevTools();
+    const targetWin = getAvailableWindow();
+    if (targetWin) targetWin.webContents.openDevTools();
   });
 
-  // 注册 IPC 处理程序 (在加载页面前注册，防止竞态条件)
-  registerIpcOnHandlers(win);
-  registerIpcHandleHandlers(win);
-  setupUpdateHandlers(win);
-
-  createMenu(win);
+  createMenu();
 
   // 处理外部链接跳转（target="_blank" 或 window.open）
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -81,6 +86,14 @@ async function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.webContents.openDevTools();
   }
+
+  // macOS: 窗口关闭时如果不是退出流程且不是主动关闭，只隐藏而不关闭
+  win.on("close", (event) => {
+    if (process.platform === "darwin" && !getIsQuitting() && !isWindowClosing(win!.id)) {
+      event.preventDefault();
+      win?.webContents.send("close");
+    }
+  });
 }
 
 // 创建主题编辑器窗口
@@ -95,7 +108,7 @@ export async function createThemeEditorWindow() {
     height: 700,
     minWidth: 800,
     minHeight: 600,
-    parent: win,
+    parent: getAvailableWindow() ?? undefined,
     modal: false,
     frame: false,
     titleBarStyle: "hidden",
@@ -168,8 +181,9 @@ function sendFileToRenderer(filePath: string) {
 
   // 发送到渲染进程的函数
   const sendFile = () => {
-    if (win && win.webContents) {
-      win.webContents.send("open-file-at-launch", {
+    const targetWin = getAvailableWindow();
+    if (targetWin) {
+      targetWin.webContents.send("open-file-at-launch", {
         filePath,
         content,
         fileTraits,
@@ -207,7 +221,11 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  // 注册所有 IPC 处理程序（只注册一次，防止重复注册报错）
   registerGlobalIpcHandlers();
+  registerIpcOnHandlers();
+  registerIpcHandleHandlers();
+  setupUpdateHandlers();
 
   // 注册自定义协议处理器（仅用于兼容旧版本残留的 milkup:// URL）
   // 新版本使用 file:// 协议直接加载本地图片
@@ -261,19 +279,7 @@ app.whenReady().then(async () => {
 
   await createWindow();
 
-  // createMenu(win) // Moved to createWindow
-  // registerIpcOnHandlers(win) // Moved to createWindow
-  // registerIpcHandleHandlers(win) // Moved to createWindow
-  // setupUpdateHandlers(win) // Moved to createWindow
-
   sendLaunchFileIfExists();
-
-  win.on("close", (event) => {
-    if (process.platform === "darwin" && !getIsQuitting()) {
-      event.preventDefault();
-      win.webContents.send("close");
-    }
-  });
 });
 
 // 单实例锁
@@ -283,12 +289,13 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-      // 处理通过命令行传入的文件路径
-      sendLaunchFileIfExists(argv);
+    const targetWin = getAvailableWindow();
+    if (targetWin) {
+      if (targetWin.isMinimized()) targetWin.restore();
+      targetWin.focus();
     }
+    // 处理通过命令行传入的文件路径
+    sendLaunchFileIfExists(argv);
   });
 }
 // macOS 专用：Finder 打开文件时触发
@@ -297,11 +304,20 @@ app.on("open-file", (event, filePath) => {
   event.preventDefault();
   sendFileToRenderer(filePath);
 });
-// 处理应用即将退出事件（包括右键 Dock 图标的退出）
+// 处理应用即将退出事件（包括右键 Dock 图标的退出、Cmd+Q）
 app.on("before-quit", (event) => {
-  if (process.platform === "darwin" && !getIsQuitting()) {
-    event.preventDefault();
-    close(win);
+  // 防止重入：close() / close:discard 中的 app.quit() 会再次触发 before-quit
+  if (getIsQuitting()) return;
+
+  // 标记正在退出，让窗口 close 事件不再拦截
+  setIsQuitting(true);
+
+  if (process.platform === "darwin") {
+    const targetWin = getAvailableWindow();
+    if (targetWin) {
+      event.preventDefault();
+      close(targetWin);
+    }
   }
 });
 
@@ -311,18 +327,22 @@ app.on("window-all-closed", () => {
   }
 });
 
-// macOS 上处理应用激活事件
+// macOS 上处理应用激活事件（点击 Dock 图标）
 app.on("activate", () => {
+  // 重置退出标记：用户重新激活应用说明不想退出
+  setIsQuitting(false);
+
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   } else {
-    // 如果窗口存在但被隐藏，则显示它
-    if (win && !win.isVisible()) {
-      win.show();
-    }
-    // 将窗口置于前台
-    if (win) {
-      win.focus();
+    const targetWin = getAvailableWindow();
+    if (targetWin) {
+      // 如果窗口存在但被隐藏，则显示它
+      if (!targetWin.isVisible()) {
+        targetWin.show();
+      }
+      // 将窗口置于前台
+      targetWin.focus();
     }
   }
 });

@@ -38,6 +38,13 @@ const windowSaveState = new Map<number, boolean>();
 /** 正在执行关闭流程的窗口集合 */
 const windowClosingSet = new Set<number>();
 
+/** 应用是否正在退出（macOS Cmd+Q / Dock 右键退出时设为 true） */
+let isQuitting = false;
+
+export function setIsQuitting(value: boolean): void {
+  isQuitting = value;
+}
+
 /** 窗口关闭后清理状态，防止内存泄漏 */
 function cleanupWindowState(windowId: number): void {
   windowSaveState.delete(windowId);
@@ -53,7 +60,7 @@ let directoryWatcher: FSWatcher | null = null;
 let directoryChangedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // 所有 on 类型监听
-export function registerIpcOnHandlers(win: Electron.BrowserWindow) {
+export function registerIpcOnHandlers() {
   ipcMain.on("set-title", (event, filePath: string | null) => {
     const targetWin = BrowserWindow.fromWebContents(event.sender);
     if (!targetWin) return;
@@ -102,11 +109,24 @@ export function registerIpcOnHandlers(win: Electron.BrowserWindow) {
     if (!targetWin || targetWin.isDestroyed()) return;
     const winId = targetWin.id;
     windowClosingSet.add(winId);
-    targetWin.close();
+    // 使用 destroy() 确保窗口在 macOS 上被彻底销毁（close() 只关闭 NSWindow 但 BrowserWindow 对象仍存活）
+    targetWin.destroy();
     cleanupWindowState(winId);
-    // 如果是最后一个窗口（非 macOS），退出应用
-    const remaining = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
-    if (remaining.length === 0 && process.platform !== "darwin") {
+
+    // 查找剩余的编辑器窗口（排除刚关闭的窗口）
+    const remainingEditorWindows = [...getEditorWindows()].filter(
+      (w) => w.id !== winId && !w.isDestroyed()
+    );
+
+    if (remainingEditorWindows.length > 0) {
+      // 还有其他编辑器窗口 → 激活其中一个到前台
+      const nextWin = remainingEditorWindows[0];
+      if (!nextWin.isVisible()) nextWin.show();
+      nextWin.focus();
+    } else {
+      // 没有剩余编辑器窗口 → 退出应用（用户主动删除了所有 tab）
+      // 先标记退出，防止 before-quit 重入拦截
+      isQuitting = true;
       app.quit();
     }
   });
@@ -156,15 +176,18 @@ export function registerIpcOnHandlers(win: Electron.BrowserWindow) {
     }
   });
 
-  // 保存自定义主题
+  // 保存自定义主题 —— 广播到所有编辑器窗口
   ipcMain.on("save-custom-theme", (_event, theme) => {
-    // 转发到主窗口
-    win.webContents.send("custom-theme-saved", theme);
+    for (const editorWin of getEditorWindows()) {
+      if (!editorWin.isDestroyed()) {
+        editorWin.webContents.send("custom-theme-saved", theme);
+      }
+    }
   });
 }
 
 // 所有 handle 类型监听 —— 使用 event.sender 路由到正确窗口
-export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
+export function registerIpcHandleHandlers() {
   // 检查文件是否只读
   ipcMain.handle("file:isReadOnly", async (_event, filePath: string) => {
     return isFileReadOnly(filePath);
@@ -172,7 +195,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
 
   // 文件打开对话框
   ipcMain.handle("dialog:openFile", async (event) => {
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+    const parentWin = BrowserWindow.fromWebContents(event.sender);
+    if (!parentWin) return null;
     const { canceled, filePaths } = await dialog.showOpenDialog(parentWin, {
       filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
       properties: ["openFile"],
@@ -196,7 +220,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
         fileTraits,
       }: { filePath: string | null; content: string; fileTraits?: FileTraits }
     ) => {
-      const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+      const parentWin = BrowserWindow.fromWebContents(event.sender);
+      if (!parentWin) return null;
       if (!filePath) {
         const { canceled, filePath: savePath } = await dialog.showSaveDialog(parentWin, {
           filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
@@ -212,7 +237,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
   );
   // 文件另存为对话框
   ipcMain.handle("dialog:saveFileAs", async (event, content) => {
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+    const parentWin = BrowserWindow.fromWebContents(event.sender);
+    if (!parentWin) return null;
     const { canceled, filePath } = await dialog.showSaveDialog(parentWin, {
       filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
     });
@@ -223,14 +249,16 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
 
   // 同步显示消息框
   ipcMain.handle("dialog:OpenDialog", async (event, options: Electron.MessageBoxSyncOptions) => {
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+    const parentWin = BrowserWindow.fromWebContents(event.sender);
+    if (!parentWin) return null;
     const response = await dialog.showMessageBox(parentWin, options);
     return response;
   });
 
   // 显示文件覆盖确认对话框
   ipcMain.handle("dialog:showOverwriteConfirm", async (event, fileName: string) => {
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+    const parentWin = BrowserWindow.fromWebContents(event.sender);
+    if (!parentWin) return 0;
     const result = await dialog.showMessageBox(parentWin, {
       type: "question",
       buttons: ["取消", "覆盖", "保存"],
@@ -244,7 +272,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
 
   // 显示关闭确认对话框
   ipcMain.handle("dialog:showCloseConfirm", async (event, fileName: string) => {
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+    const parentWin = BrowserWindow.fromWebContents(event.sender);
+    if (!parentWin) return 0;
     const result = await dialog.showMessageBox(parentWin, {
       type: "question",
       buttons: ["取消", "不保存", "保存"],
@@ -258,7 +287,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
 
   // 显示文件选择对话框
   ipcMain.handle("dialog:showOpenDialog", async (event, options: any) => {
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+    const parentWin = BrowserWindow.fromWebContents(event.sender);
+    if (!parentWin) return { canceled: true, filePaths: [] };
     const result = await dialog.showOpenDialog(parentWin, options);
     return result;
   });
@@ -272,7 +302,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
       options?: ExportPDFOptions
     ): Promise<void> => {
       const sender = event.sender;
-      const parentWin = BrowserWindow.fromWebContents(sender) ?? win;
+      const parentWin = BrowserWindow.fromWebContents(sender);
+      if (!parentWin) return Promise.reject(new Error("窗口已销毁"));
       const { pageSize = "A4", scale = 1 } = options || {};
 
       // 保证代码块完整显示
@@ -460,7 +491,8 @@ export function registerIpcHandleHandlers(win: Electron.BrowserWindow) {
       });
 
       const buffer = await Packer.toBuffer(doc);
-      const parentWin = BrowserWindow.fromWebContents(event.sender) ?? win;
+      const parentWin = BrowserWindow.fromWebContents(event.sender);
+      if (!parentWin) return Promise.reject(new Error("窗口已销毁"));
 
       const { canceled, filePath } = await dialog.showSaveDialog(parentWin, {
         title: "导出为 Word",
@@ -857,9 +889,11 @@ export function registerGlobalIpcHandlers() {
     const notifyChanged = () => {
       if (directoryChangedDebounceTimer) clearTimeout(directoryChangedDebounceTimer);
       directoryChangedDebounceTimer = setTimeout(() => {
-        const mainWindow = BrowserWindow.getAllWindows()[0];
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("workspace:directory-changed");
+        // 广播到所有编辑器窗口
+        for (const editorWin of getEditorWindows()) {
+          if (!editorWin.isDestroyed()) {
+            editorWin.webContents.send("workspace:directory-changed");
+          }
         }
       }, 300);
     };
@@ -932,12 +966,15 @@ export function close(win: Electron.BrowserWindow) {
 
   if (isSaved) {
     windowClosingSet.add(win.id);
-    win.close();
+    // 使用 destroy() 确保窗口在 macOS 上被彻底销毁
+    win.destroy();
     cleanupWindowState(win.id);
-    // 如果所有窗口都关了（非 macOS），退出应用
+    // 如果所有窗口都关了，退出应用
     const remaining = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
-    if (remaining.length === 0 && process.platform !== "darwin") {
-      app.quit();
+    if (remaining.length === 0) {
+      if (process.platform !== "darwin" || isQuitting) {
+        app.quit();
+      }
     }
   } else {
     // 有未保存内容，通知渲染进程弹出确认框
@@ -948,9 +985,15 @@ export function close(win: Electron.BrowserWindow) {
 }
 
 export function getIsQuitting() {
-  // 兼容旧逻辑：当所有窗口都在关闭时视为正在退出
+  // 显式退出标记 或 所有窗口都已在关闭流程中
+  if (isQuitting) return true;
   const allWindows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
   return allWindows.length === 0 || allWindows.every((w) => windowClosingSet.has(w.id));
+}
+
+/** 检查指定窗口是否已在关闭流程中（由 close:discard 或 close() 发起） */
+export function isWindowClosing(winId: number): boolean {
+  return windowClosingSet.has(winId);
 }
 export function isFileReadOnly(filePath: string): boolean {
   // 先检测是否可写（跨平台）
